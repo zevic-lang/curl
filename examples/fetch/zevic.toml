@@ -1,0 +1,8 @@
+[package]
+name = "Fetch"
+version = "0.1.0"
+kind = "bin"
+zevic = ">=0.4"
+
+[deps]
+Curl = { path = "../.." }
