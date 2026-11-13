@@ -1,0 +1,318 @@
+module Curl
+
+// An HTTP and HTTPS client for Zevic, on top of libcurl.
+//
+//     let r: Http.Response = Curl.Get("https://example.com/")?
+//     Console.Println("${r.Status} ${r.Body.Len()} bytes")
+//
+// It speaks in the types of Zevic.Http (Request, Response, Field), so `Http.Get` can be replaced by `Curl.Get`.
+// What Zevic.Http cannot do and this can: HTTPS, redirects, compressed answers (gzip, deflate, br), proxies
+// (HTTPS_PROXY and friends), timeouts, and one connection for many requests (with a Client).
+//
+// As in Zevic.Http, a 404 or a 500 is a Response, not an error. An error is a request that did not get an answer.
+// Only http:// and https:// addresses are accepted.
+
+import Zevic.Bytes
+import Zevic.Http
+import Zevic.Text
+
+extern "C" {
+    fn zv_curl_version() -> CString
+    fn zv_curl_has_https() -> CInt
+    fn zv_curl_new() -> *CVoid
+    fn zv_curl_free(h: *CVoid) -> CVoid
+    fn zv_curl_begin(h: *CVoid) -> CVoid
+    fn zv_curl_set_url(h: *CVoid, url: CString) -> CInt
+    fn zv_curl_set_method(h: *CVoid, method: CString) -> CInt
+    fn zv_curl_set_body(h: *CVoid, data: CString, len: CLongLong) -> CInt
+    fn zv_curl_add_header(h: *CVoid, line: CString) -> CInt
+    fn zv_curl_set_timeout_ms(h: *CVoid, ms: CLongLong) -> CInt
+    fn zv_curl_set_connect_timeout_ms(h: *CVoid, ms: CLongLong) -> CInt
+    fn zv_curl_set_follow(h: *CVoid, on: CInt, max: CLongLong) -> CInt
+    fn zv_curl_set_user_agent(h: *CVoid, ua: CString) -> CInt
+    fn zv_curl_set_insecure(h: *CVoid, on: CInt) -> CInt
+    fn zv_curl_set_cainfo(h: *CVoid, path: CString) -> CInt
+    fn zv_curl_set_max_body(h: *CVoid, max: CLongLong) -> CVoid
+    fn zv_curl_perform(h: *CVoid) -> CInt
+    fn zv_curl_status(h: *CVoid) -> CLongLong
+    fn zv_curl_effective_url(h: *CVoid) -> CString
+    fn zv_curl_body_len(h: *CVoid) -> CLongLong
+    fn zv_curl_headers_len(h: *CVoid) -> CLongLong
+    fn zv_curl_read_body(h: *CVoid, dst: *U8, cap: CLongLong) -> CLongLong
+    fn zv_curl_read_headers(h: *CVoid, dst: *U8, cap: CLongLong) -> CLongLong
+    fn zv_curl_error_text(h: *CVoid, code: CInt) -> CString
+}
+
+/// The version of libcurl that is linked, for example "libcurl/8.5.0 OpenSSL/3.0.13 ...".
+fn Version() -> String {
+    String.FromCLossy(zv_curl_version())
+}
+
+/// True when the libcurl that is linked can do HTTPS.
+fn HasHttps() -> Bool {
+    zv_curl_has_https().ToI32() != 0
+}
+
+// ---- the answer ----
+
+/// An answer with the body as bytes (use it for files and anything that is not text).
+class Reply {
+    Status: I64
+    /// The address that answered, after redirects.
+    Url: String
+    Headers: Array<Http.Field>
+    Body: Array<U8>
+
+    fn Init(status: I64, url: String, headers: Array<Http.Field>, body: Array<U8>) {
+        this.Status = status
+        this.Url = url
+        this.Headers = headers
+        this.Body = body
+    }
+
+    /// The value of a header (the name is not case sensitive).
+    fn Header(name: String) -> Option<String> {
+        let want: String = Text.ToLower(name)
+        for (f in this.Headers) {
+            if (Text.ToLower(f.Name) == want) {
+                return Some(f.Value)
+            }
+        }
+        None
+    }
+
+    /// Status 200 to 299.
+    fn IsOk() -> Bool { this.Status >= 200 && this.Status < 300 }
+
+    /// The body as text; bytes that are not UTF-8 become U+FFFD.
+    fn AsText() -> String { Bytes.ToStringLossy(this.Body) }
+}
+
+// ---- the lines of the header of an answer ----
+
+/// Turns the raw header lines that libcurl collected into fields. An answer that was followed by another
+/// (a redirect, a 100 Continue) is dropped: only the fields of the last one count.
+fn parseHeaders(raw: String) -> Array<Http.Field> {
+    mut out: Array<Http.Field> = []
+    for (piece in Text.Split(raw, "\n")) {
+        let line: String = Text.TrimEnd(piece)
+        if (Text.StartsWith(line, "HTTP/")) {
+            out = []
+        } else if (Text.StartsWith(line, " ") || Text.StartsWith(line, "\t")) {
+            // an old style continuation line: not supported, ignored
+        } else {
+            match (Text.IndexOf(line, ":")) {
+                Some(i) => {
+                    if (i > 0) {
+                        out.Push(Http.Field.New(Text.Trim(line.Slice(0, i)), Text.Trim(line.Slice(i + 1, line.Len()))))
+                    }
+                },
+                None => {},
+            }
+        }
+    }
+    out
+}
+
+// ---- errors ----
+
+/// The kind of error that a CURLcode stands for.
+fn kindOf(code: I32) -> ErrorKind {
+    if (code == 28) { return ErrorKind.Timeout }
+    if (code == 1 || code == 3 || code == 4 || code == 43 || code == 48) { return ErrorKind.Invalid }
+    // 47: too many redirects; 23: the body is larger than MaxBodyBytes (the only reason why a write is refused)
+    if (code == 47 || code == 23) { return ErrorKind.OutOfRange }
+    if (code == 2 || code == 27) { return ErrorKind.Other }
+    ErrorKind.Io
+}
+
+fn bad(msg: String) -> Error {
+    Error.New(ErrorKind.Invalid, "curl: ${msg}")
+}
+
+fn hasAny(s: String, parts: Array<String>) -> Bool {
+    for (p in parts) {
+        if (Text.Contains(s, p)) {
+            return true
+        }
+    }
+    false
+}
+
+// libcurl sends a header line and a method as they are written, so a line break in them would make
+// a second header (or a second request). Refuse them here.
+fn checkRequest(req: Http.Request) -> Result<Unit, Error> {
+    if (req.Method == "" || hasAny(req.Method, [" ", "\t", "\r", "\n", ":", "/"])) {
+        return Err(bad("the method is wrong: ${req.Method}"))
+    }
+    if ((req.Method == "GET" || req.Method == "HEAD") && req.Body.Len() > 0) {
+        return Err(bad("a ${req.Method} request cannot have a body"))
+    }
+    for (f in req.Headers) {
+        if (f.Name == "" || hasAny(f.Name, [" ", "\t", "\r", "\n", ":"])) {
+            return Err(bad("the name of a header is wrong: ${f.Name}"))
+        }
+        if (hasAny(f.Value, ["\r", "\n"])) {
+            return Err(bad("the value of the header ${f.Name} has a line break"))
+        }
+    }
+    Ok(())
+}
+
+// ---- a client ----
+
+/// A client keeps its connections, so that many requests to one server are fast.
+/// Set the options before the first request. A Client is for one thread at a time; give each thread its own.
+///
+///     mut c: Curl.Client = Curl.Client.Open()?
+///     defer c.Close()
+///     c.TimeoutMs = 5000
+///     let r: Http.Response = c.Get("https://example.com/")?
+class Client {
+    /// The most time that a whole request may take, in milliseconds (0 = no limit).
+    TimeoutMs: I64 = 0
+    /// The most time that making the connection may take, in milliseconds.
+    ConnectTimeoutMs: I64 = 30000
+    FollowRedirects: Bool = true
+    MaxRedirects: I64 = 10
+    UserAgent: String = "zevic-curl/0.1"
+    /// Does not check the certificate and the host name of an HTTPS server. Only for tests and servers you trust.
+    Insecure: Bool = false
+    /// A file of certificates to trust, instead of the ones of the system ("" = the default).
+    CaFile: String = ""
+    /// The most bytes of a body to accept; a larger one is an error (0 = no limit).
+    MaxBodyBytes: I64 = 0
+    h: *CVoid
+    closed: Bool = false
+
+    fn Init(h: *CVoid) {
+        this.h = h
+    }
+
+    static fn Open() -> Result<Client, Error> {
+        let h: *CVoid = zv_curl_new()
+        if (h == Null) {
+            return Err(Error.New(ErrorKind.Other, "curl: cannot start libcurl"))
+        }
+        Ok(Client.New(h))
+    }
+
+    /// Frees the client and its connections. Calling it twice is harmless.
+    mut fn Close() {
+        if (!this.closed) {
+            zv_curl_free(this.h)
+            this.closed = true
+        }
+    }
+
+    /// Sends a request and gives the answer with the body as bytes.
+    fn Fetch(req: Http.Request) -> Result<Reply, Error> {
+        Assert(!this.closed, "curl: the client is closed")
+        checkRequest(req)?
+        let h: *CVoid = this.h
+        zv_curl_begin(h)
+        zv_curl_set_url(h, req.Url.ToC())
+        zv_curl_set_method(h, req.Method.ToC())
+        if (req.Method != "GET" && req.Method != "HEAD") {
+            zv_curl_set_body(h, req.Body.ToC(), req.Body.Len().ToCLongLong())
+            if (req.Body.Len() > 0 && req.Header("Content-Type").IsNone()) {
+                // like Zevic.Http: no Content-Type unless there is one. (An empty value removes the one libcurl adds.)
+                zv_curl_add_header(h, "Content-Type:".ToC())
+            }
+        }
+        for (f in req.Headers) {
+            zv_curl_add_header(h, "${f.Name}: ${f.Value}".ToC())
+        }
+        zv_curl_set_timeout_ms(h, this.TimeoutMs.ToCLongLong())
+        zv_curl_set_connect_timeout_ms(h, this.ConnectTimeoutMs.ToCLongLong())
+        zv_curl_set_follow(h, if (this.FollowRedirects) { 1.ToCInt() } else { 0.ToCInt() }, this.MaxRedirects.ToCLongLong())
+        zv_curl_set_user_agent(h, this.UserAgent.ToC())
+        zv_curl_set_insecure(h, if (this.Insecure) { 1.ToCInt() } else { 0.ToCInt() })
+        if (this.CaFile != "") {
+            zv_curl_set_cainfo(h, this.CaFile.ToC())
+        }
+        zv_curl_set_max_body(h, this.MaxBodyBytes.ToCLongLong())
+
+        let code: I32 = zv_curl_perform(h).ToI32()
+        if (code != 0) {
+            return Err(Error.New(kindOf(code), "curl: ${String.FromCLossy(zv_curl_error_text(h, code.ToCInt()))}"))
+        }
+
+        let headerBytes: Array<U8> = takeHeaders(h)
+        let body: Array<U8> = takeBody(h)
+        Ok(Reply.New(
+            zv_curl_status(h).ToI64(),
+            String.FromCLossy(zv_curl_effective_url(h)),
+            parseHeaders(Bytes.ToStringLossy(headerBytes)),
+            body,
+        ))
+    }
+
+    /// Sends a request. The body of the answer is text (bytes that are not UTF-8 become U+FFFD).
+    fn Send(req: Http.Request) -> Result<Http.Response, Error> {
+        let r: Reply = this.Fetch(req)?
+        mut res: Http.Response = Http.Response.New(r.Status, r.AsText())
+        res.Headers = r.Headers
+        Ok(res)
+    }
+
+    fn Get(url: String) -> Result<Http.Response, Error> {
+        this.Send(Http.Request.New("GET", url))
+    }
+
+    fn Post(url: String, body: String) -> Result<Http.Response, Error> {
+        mut req: Http.Request = Http.Request.New("POST", url)
+        req.SetBody(body)
+        this.Send(req)
+    }
+
+    /// Gets an address and gives the body as bytes.
+    fn GetBytes(url: String) -> Result<Array<U8>, Error> {
+        let r: Reply = this.Fetch(Http.Request.New("GET", url))?
+        Ok(r.Body)
+    }
+}
+
+fn takeBody(h: *CVoid) -> Array<U8> {
+    let n: I64 = zv_curl_body_len(h).ToI64()
+    let buf: Array<U8> = Bytes.Zeros(n)
+    if (n > 0) {
+        zv_curl_read_body(h, buf.Ptr(), n.ToCLongLong())
+    }
+    buf
+}
+
+fn takeHeaders(h: *CVoid) -> Array<U8> {
+    let n: I64 = zv_curl_headers_len(h).ToI64()
+    let buf: Array<U8> = Bytes.Zeros(n)
+    if (n > 0) {
+        zv_curl_read_headers(h, buf.Ptr(), n.ToCLongLong())
+    }
+    buf
+}
+
+// ---- one request without a client ----
+
+/// Sends a request with a new client (the connection is not kept).
+fn Send(req: Http.Request) -> Result<Http.Response, Error> {
+    mut c: Client = Client.Open()?
+    defer c.Close()
+    c.Send(req)
+}
+
+fn Get(url: String) -> Result<Http.Response, Error> {
+    Send(Http.Request.New("GET", url))
+}
+
+fn Post(url: String, body: String) -> Result<Http.Response, Error> {
+    mut req: Http.Request = Http.Request.New("POST", url)
+    req.SetBody(body)
+    Send(req)
+}
+
+/// Gets an address and gives the body as bytes.
+fn GetBytes(url: String) -> Result<Array<U8>, Error> {
+    mut c: Client = Client.Open()?
+    defer c.Close()
+    c.GetBytes(url)
+}
