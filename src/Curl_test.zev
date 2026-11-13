@@ -1,0 +1,392 @@
+module Curl
+
+import Zevic.Async
+import Zevic.Bytes
+import Zevic.Console
+import Zevic.Env
+import Zevic.Http
+import Zevic.Test
+import Zevic.Text
+import Zevic.Time
+
+// ---- a server on this machine, for the tests ----
+
+class Local {
+    server: Http.Server
+    task: Async.Task<Result<Unit, Error>>
+    Base: String
+
+    fn Init(server: Http.Server, task: Async.Task<Result<Unit, Error>>) {
+        this.server = server
+        this.task = task
+        this.Base = "http://127.0.0.1:${server.Port()}"
+    }
+
+    fn Stop() {
+        this.server.Close()
+        let _r: Result<Unit, Error> = await this.task
+    }
+}
+
+fn redirectTo(target: String) -> Http.Response {
+    mut r: Http.Response = Http.Response.Text(302, "moved")
+    r.SetHeader("Location", target)
+    r
+}
+
+fn handle(req: Http.Request) -> Http.Response {
+    let path: String = req.Path()
+    if (path == "/hello") {
+        return Http.Response.Text(200, "hello ${req.Query()}")
+    }
+    if (path == "/echo") {
+        mut r: Http.Response = Http.Response.Text(201, "${req.Method} ${req.Body}")
+        r.SetHeader("X-Seen", req.Header("x-test").UnwrapOr("none"))
+        r.SetHeader("X-Type", req.Header("content-type").UnwrapOr("none"))
+        r.SetHeader("X-Agent", req.Header("user-agent").UnwrapOr("none"))
+        return r
+    }
+    if (path == "/redirect") {
+        return redirectTo("/hello?via=redirect")
+    }
+    if (path == "/loop") {
+        return redirectTo("/loop")
+    }
+    if (path == "/slow") {
+        Time.Sleep(Time.Duration.FromMillis(800))
+        return Http.Response.Text(200, "late")
+    }
+    if (path == "/big") {
+        return Http.Response.Text(200, Text.Repeat("0123456789", 100000))
+    }
+    Http.Response.Text(404, "no ${path}")
+}
+
+fn startLocal() -> Local {
+    let server: Http.Server = Http.Listen("127.0.0.1", 0).Unwrap()
+    let task: Async.Task<Result<Unit, Error>> = async {
+        server.Serve((req: Http.Request) => handle(req))
+    }
+    Local.New(server, task)
+}
+
+fn kindName(r: Result<Http.Response, Error>) -> String {
+    match (r) {
+        Ok(_) => "ok",
+        Err(e) => e.Kind().ToString(),
+    }
+}
+
+fn messageOf(r: Result<Http.Response, Error>) -> String {
+    match (r) {
+        Ok(_) => "",
+        Err(e) => e.Message(),
+    }
+}
+
+// ---- the library ----
+
+test "libcurl is linked and can do HTTPS" {
+    Test.True(Text.StartsWith(Version(), "libcurl/"))
+    Test.True(HasHttps())
+}
+
+// ---- answers ----
+
+test "Get gives the status, the body and the headers" {
+    let s: Local = startLocal()
+    defer s.Stop()
+    let r: Http.Response = Get("${s.Base}/hello?a=1").Unwrap()
+    Test.Equal(r.Status, 200)
+    Test.Equal(r.Body, "hello a=1")
+    Test.True(r.IsOk())
+    Test.True(Text.StartsWith(r.Header("CONTENT-TYPE").UnwrapOr(""), "text/plain"))
+}
+
+test "a 404 is a Response, not an error" {
+    let s: Local = startLocal()
+    defer s.Stop()
+    let r: Http.Response = Get("${s.Base}/nothing").Unwrap()
+    Test.Equal(r.Status, 404)
+    Test.Equal(r.Body, "no /nothing")
+    Test.False(r.IsOk())
+}
+
+test "Post sends the body, UTF-8 included, and no Content-Type of its own" {
+    let s: Local = startLocal()
+    defer s.Stop()
+    let r: Http.Response = Post("${s.Base}/echo", "ゼヴィック").Unwrap()
+    Test.Equal(r.Status, 201)
+    Test.Equal(r.Body, "POST ゼヴィック")
+    Test.Equal(r.Header("x-type").UnwrapOr("?"), "none")
+}
+
+test "Send sends the method, the headers and the body of a request" {
+    let s: Local = startLocal()
+    defer s.Stop()
+    mut req: Http.Request = Http.Request.New("PUT", "${s.Base}/echo")
+    req.SetHeader("X-Test", "yes")
+    req.SetHeader("Content-Type", "text/x-test")
+    req.SetBody("put body")
+    let r: Http.Response = Send(req).Unwrap()
+    Test.Equal(r.Body, "PUT put body")
+    Test.Equal(r.Header("x-seen").UnwrapOr("?"), "yes")
+    Test.Equal(r.Header("x-type").UnwrapOr("?"), "text/x-test")
+}
+
+test "a method without a body is sent with an empty one" {
+    let s: Local = startLocal()
+    defer s.Stop()
+    let r: Http.Response = Send(Http.Request.New("DELETE", "${s.Base}/echo")).Unwrap()
+    Test.Equal(r.Body, "DELETE ")
+}
+
+test "HEAD gives the status and no body" {
+    let s: Local = startLocal()
+    defer s.Stop()
+    let r: Http.Response = Send(Http.Request.New("HEAD", "${s.Base}/hello")).Unwrap()
+    Test.Equal(r.Status, 200)
+    Test.Equal(r.Body, "")
+}
+
+test "a body of one megabyte comes whole" {
+    let s: Local = startLocal()
+    defer s.Stop()
+    let r: Http.Response = Get("${s.Base}/big").Unwrap()
+    Test.Equal(r.Body.Len(), 1000000)
+}
+
+test "MaxBodyBytes refuses a larger body" {
+    let s: Local = startLocal()
+    defer s.Stop()
+    mut c: Client = Client.Open().Unwrap()
+    defer c.Close()
+    c.MaxBodyBytes = 1000
+    Test.Equal(kindName(c.Get("${s.Base}/big")), "OutOfRange")
+    // the same client still works for a small answer
+    Test.Equal(c.Get("${s.Base}/hello").Unwrap().Body, "hello ")
+}
+
+test "GetBytes gives the bytes of the body" {
+    let s: Local = startLocal()
+    defer s.Stop()
+    let b: Array<U8> = GetBytes("${s.Base}/echo?x").Unwrap()
+    // /echo answers a GET with "GET " and the empty body
+    Test.Equal(Bytes.ToStringLossy(b), "GET ")
+    Test.Equal(b.Len(), 4)
+    let t: Array<U8> = GetBytes("${s.Base}/nothing").Unwrap()
+    Test.Equal(t.Len(), 11)
+}
+
+test "Fetch gives the status, the address and the headers with the body as bytes" {
+    let s: Local = startLocal()
+    defer s.Stop()
+    mut c: Client = Client.Open().Unwrap()
+    defer c.Close()
+    let r: Reply = c.Fetch(Http.Request.New("GET", "${s.Base}/hello?k=v")).Unwrap()
+    Test.Equal(r.Status, 200)
+    Test.Equal(r.AsText(), "hello k=v")
+    Test.True(Text.EndsWith(r.Url, "/hello?k=v"))
+    Test.True(r.Header("content-type").IsSome())
+}
+
+// ---- a client ----
+
+test "a Client can send many requests" {
+    let s: Local = startLocal()
+    defer s.Stop()
+    mut c: Client = Client.Open().Unwrap()
+    defer c.Close()
+    Test.Equal(c.Get("${s.Base}/hello?1").Unwrap().Body, "hello 1")
+    Test.Equal(c.Get("${s.Base}/hello?2").Unwrap().Body, "hello 2")
+    Test.Equal(c.Post("${s.Base}/echo", "x").Unwrap().Body, "POST x")
+    // options of one request do not stay for the next
+    Test.Equal(c.Get("${s.Base}/hello?3").Unwrap().Body, "hello 3")
+}
+
+test "the User-Agent is set, and can be changed" {
+    let s: Local = startLocal()
+    defer s.Stop()
+    mut c: Client = Client.Open().Unwrap()
+    defer c.Close()
+    Test.Equal(c.Get("${s.Base}/echo").Unwrap().Header("x-agent").UnwrapOr("?"), "zevic-curl/0.1")
+    c.UserAgent = "mine/2"
+    Test.Equal(c.Get("${s.Base}/echo").Unwrap().Header("x-agent").UnwrapOr("?"), "mine/2")
+}
+
+test "Close can be called twice" {
+    mut c: Client = Client.Open().Unwrap()
+    c.Close()
+    c.Close()
+}
+
+// ---- redirects ----
+
+test "a redirect is followed" {
+    let s: Local = startLocal()
+    defer s.Stop()
+    mut c: Client = Client.Open().Unwrap()
+    defer c.Close()
+    let r: Reply = c.Fetch(Http.Request.New("GET", "${s.Base}/redirect")).Unwrap()
+    Test.Equal(r.Status, 200)
+    Test.Equal(r.AsText(), "hello via=redirect")
+    Test.True(Text.EndsWith(r.Url, "/hello?via=redirect"))
+    // only the fields of the last answer are kept: no Location
+    Test.True(r.Header("location").IsNone())
+}
+
+test "FollowRedirects = false gives the redirect itself" {
+    let s: Local = startLocal()
+    defer s.Stop()
+    mut c: Client = Client.Open().Unwrap()
+    defer c.Close()
+    c.FollowRedirects = false
+    let r: Http.Response = c.Get("${s.Base}/redirect").Unwrap()
+    Test.Equal(r.Status, 302)
+    Test.Equal(r.Header("location").UnwrapOr("?"), "/hello?via=redirect")
+}
+
+test "a redirect loop stops after MaxRedirects" {
+    let s: Local = startLocal()
+    defer s.Stop()
+    mut c: Client = Client.Open().Unwrap()
+    defer c.Close()
+    c.MaxRedirects = 3
+    Test.Equal(kindName(c.Get("${s.Base}/loop")), "OutOfRange")
+}
+
+// ---- requests that do not get an answer ----
+
+test "a timeout is an error of the kind Timeout" {
+    let s: Local = startLocal()
+    defer s.Stop()
+    mut c: Client = Client.Open().Unwrap()
+    defer c.Close()
+    c.TimeoutMs = 200
+    Test.Equal(kindName(c.Get("${s.Base}/slow")), "Timeout")
+}
+
+test "a refused connection is an error of the kind Io" {
+    Test.Equal(kindName(Get("http://127.0.0.1:1/")), "Io")
+}
+
+test "only http and https are accepted" {
+    Test.Equal(kindName(Get("file:///etc/hostname")), "Invalid")
+    Test.Equal(kindName(Get("ftp://127.0.0.1/x")), "Invalid")
+    Test.Equal(kindName(Get("gopher://127.0.0.1/x")), "Invalid")
+}
+
+test "a broken address is an error" {
+    Test.Err(Get("http://"))
+    Test.Err(Get(""))
+}
+
+// ---- requests that are refused before they are sent ----
+
+test "a line break in a header is refused" {
+    mut req: Http.Request = Http.Request.New("GET", "http://127.0.0.1:1/")
+    req.SetHeader("X-Test", "a\r\nEvil: yes")
+    Test.Equal(kindName(Send(req)), "Invalid")
+    Test.True(Text.Contains(messageOf(Send(req)), "line break"))
+}
+
+test "a wrong name of a header is refused" {
+    mut req: Http.Request = Http.Request.New("GET", "http://127.0.0.1:1/")
+    req.SetHeader("X Test", "a")
+    Test.Equal(kindName(Send(req)), "Invalid")
+    mut req2: Http.Request = Http.Request.New("GET", "http://127.0.0.1:1/")
+    req2.SetHeader("X-Test: a\r\nEvil", "b")
+    Test.Equal(kindName(Send(req2)), "Invalid")
+}
+
+test "a wrong method is refused" {
+    Test.Equal(kindName(Send(Http.Request.New("GE T", "http://127.0.0.1:1/"))), "Invalid")
+    Test.Equal(kindName(Send(Http.Request.New("GET\r\nEvil: 1", "http://127.0.0.1:1/"))), "Invalid")
+    Test.Equal(kindName(Send(Http.Request.New("", "http://127.0.0.1:1/"))), "Invalid")
+}
+
+test "a GET with a body is refused" {
+    mut req: Http.Request = Http.Request.New("GET", "http://127.0.0.1:1/")
+    req.SetBody("x")
+    Test.Equal(kindName(Send(req)), "Invalid")
+}
+
+// ---- the lines of a header ----
+
+test "parseHeaders keeps the fields of the last answer" {
+    let raw: String = "HTTP/1.1 301 Moved\r\nLocation: /x\r\n\r\nHTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nX-A:  spaced  \r\nSet-Cookie: a=1\r\nSet-Cookie: b=2\r\n\r\n"
+    let f: Array<Http.Field> = parseHeaders(raw)
+    Test.Equal(f.Len(), 4)
+    Test.Equal(f[0].Name, "Content-Type")
+    Test.Equal(f[0].Value, "text/plain")
+    Test.Equal(f[1].Value, "spaced")
+    Test.Equal(f[2].Value, "a=1")
+    Test.Equal(f[3].Value, "b=2")
+}
+
+test "parseHeaders reads HTTP/2 and keeps a colon in a value" {
+    let f: Array<Http.Field> = parseHeaders("HTTP/2 200 \r\nlocation: http://example.com:8080/x\r\ncontent-length: 3\r\n\r\n")
+    Test.Equal(f.Len(), 2)
+    Test.Equal(f[0].Value, "http://example.com:8080/x")
+}
+
+test "parseHeaders ignores continuation lines and lines without a colon" {
+    let f: Array<Http.Field> = parseHeaders("HTTP/1.1 200 OK\r\nA: 1\r\n  folded: not a field\r\nnonsense\r\n: empty name\r\nB: 2\r\n\r\n")
+    Test.Equal(f.Len(), 2)
+    Test.Equal(f[0].Name, "A")
+    Test.Equal(f[1].Name, "B")
+}
+
+test "parseHeaders gives nothing for nothing" {
+    Test.Equal(parseHeaders("").Len(), 0)
+}
+
+// ---- the kinds of errors ----
+
+test "kindOf sorts the codes of libcurl" {
+    Test.Equal(kindOf(28).ToString(), "Timeout")
+    Test.Equal(kindOf(1).ToString(), "Invalid")
+    Test.Equal(kindOf(3).ToString(), "Invalid")
+    Test.Equal(kindOf(47).ToString(), "OutOfRange")
+    Test.Equal(kindOf(23).ToString(), "OutOfRange")
+    Test.Equal(kindOf(27).ToString(), "Other")
+    Test.Equal(kindOf(6).ToString(), "Io")
+    Test.Equal(kindOf(7).ToString(), "Io")
+    Test.Equal(kindOf(60).ToString(), "Io")
+}
+
+// ---- HTTPS ----
+//
+// These two need an HTTPS server with a self-signed certificate. CI starts one with `openssl s_server`
+// and sets CURL_TEST_HTTPS_URL (for example https://localhost:8443/) and CURL_TEST_CA_FILE (the certificate).
+// Without them the tests do nothing.
+
+test "HTTPS: a certificate that is not trusted is refused" {
+    match (Env.Get("CURL_TEST_HTTPS_URL")) {
+        None => Console.Println("        (skipped: CURL_TEST_HTTPS_URL is not set)"),
+        Some(url) => {
+            let r: Result<Http.Response, Error> = Get(url)
+            Test.Equal(kindName(r), "Io")
+            Test.True(Text.Contains(messageOf(r), "certificate"))
+        },
+    }
+}
+
+test "HTTPS: a certificate from CaFile is accepted, and Insecure accepts any" {
+    match (Env.Get("CURL_TEST_HTTPS_URL")) {
+        None => Console.Println("        (skipped: CURL_TEST_HTTPS_URL is not set)"),
+        Some(url) => {
+            let ca: String = Env.Get("CURL_TEST_CA_FILE").Unwrap()
+            mut c: Client = Client.Open().Unwrap()
+            defer c.Close()
+            c.CaFile = ca
+            let r: Http.Response = c.Get(url).Unwrap()
+            Test.Equal(r.Status, 200)
+
+            mut d: Client = Client.Open().Unwrap()
+            defer d.Close()
+            d.Insecure = true
+            Test.Equal(d.Get(url).Unwrap().Status, 200)
+        },
+    }
+}
