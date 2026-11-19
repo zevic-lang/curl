@@ -19,8 +19,8 @@ permissions:
 
 env:
   # the zevic that builds and tests the package
-  # zevpm reads lib_dirs and include_dirs from [native] since the commit after v0.4.6 (it is in 0.4.7)
-  ZEVIC_REF: 7768cbcff2df5ece2daaf83721a39b969f5652c0
+  # zevpm reads lib_dirs and include_dirs from [native] since the commit after v0.4.6 (absolute directories since the one after that) (it is in 0.4.7)
+  ZEVIC_REF: 99d7df4986c364f92cfe4d114c94c478c6edd0d6
 
 jobs:
   test:
