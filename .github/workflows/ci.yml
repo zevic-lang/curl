@@ -19,7 +19,8 @@ permissions:
 
 env:
   # the zevic that builds and tests the package
-  ZEVIC_REF: v0.4.6
+  # zevpm reads lib_dirs and include_dirs from [native] since the commit after v0.4.6 (it is in 0.4.7)
+  ZEVIC_REF: 7768cbcff2df5ece2daaf83721a39b969f5652c0
 
 jobs:
   test:
@@ -66,11 +67,6 @@ jobs:
           fi
           echo "C:\\Program Files\\LLVM\\bin" >> "$GITHUB_PATH"
 
-      # the Visual Studio environment (INCLUDE and LIB), so that LIB can be extended with vcpkg's directory
-      - name: Visual Studio environment (Windows)
-        if: runner.os == 'Windows'
-        uses: ilammy/msvc-dev-cmd@v1.13.0
-
       - name: Install libcurl (Windows, vcpkg)
         if: runner.os == 'Windows'
         run: |
@@ -78,9 +74,10 @@ jobs:
           V="$(cygpath -m "$VCPKG_INSTALLATION_ROOT")/installed/x64-windows"
           # zevic.toml asks for `curl`; vcpkg names the import library libcurl.lib
           cp "$V/lib/libcurl.lib" "$V/lib/curl.lib"
-          echo "CPATH=$V/include" >> "$GITHUB_ENV"
-          echo "LIB=$(cygpath -w "$V/lib");$LIB" >> "$GITHUB_ENV"
           echo "$V/bin" >> "$GITHUB_PATH"
+          # tell zevpm where libcurl is, with the [native] keys (this copy of zevic.toml is not committed)
+          sed -i "s#^libs = \\[\"curl\"\\]#libs = [\"curl\"]\\nlib_dirs = [\"$V/lib\"]\\ninclude_dirs = [\"$V/include\"]#" zevic.toml
+          grep -A4 "^\[native\]" zevic.toml
 
       - name: Build zevic
         run: make -C zevic
