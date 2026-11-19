@@ -74,7 +74,7 @@ jobs:
           # zevic.toml asks for `curl`; vcpkg names the import library libcurl.lib
           cp "$V/lib/libcurl.lib" "$V/lib/curl.lib"
           echo "CPATH=$V/include" >> "$GITHUB_ENV"
-          echo "LIB=$V/lib" >> "$GITHUB_ENV"
+          echo "VCPKG_LIB=$V/lib" >> "$GITHUB_ENV"
           echo "$V/bin" >> "$GITHUB_PATH"
 
       - name: Build zevic
@@ -92,6 +92,10 @@ jobs:
             trap 'kill $!' EXIT
             sleep 1
             export CURL_TEST_HTTPS_URL="https://localhost:8443/" CURL_TEST_CA_FILE="$TLS/cert.pem"
+          fi
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            # the import library is searched in vcpkg's directory (setting LIB would hide the Windows SDK)
+            sed -i "s#^libs = \\[\"curl\"\\]#libs = [\"curl\"]\\nlib_dirs = [\"$VCPKG_LIB\"]#" zevic.toml
           fi
           zevic/build/zevpm test
 
