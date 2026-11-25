@@ -12,9 +12,9 @@ import Zevic.Time
 // ---- a server on this machine, for the tests ----
 
 class Local {
-    server: Http.Server
-    task: Async.Task<Result<Unit, Error>>
-    Base: String
+    let server: Http.Server
+    let task: Async.Task<Result<Unit, Error>>
+    let Base: String
 
     fn Init(server: Http.Server, task: Async.Task<Result<Unit, Error>>) {
         this.server = server
