@@ -12,9 +12,9 @@ import Zevic.Time
 // ---- a server on this machine, for the tests ----
 
 class Local {
-    server: Http.Server
-    task: Async.Task<Result<Unit, Error>>
-    Base: String
+    let server: Http.Server
+    let task: Async.Task<Result<Unit, Error>>
+    let Base: String
 
     fn Init(server: Http.Server, task: Async.Task<Result<Unit, Error>>) {
         this.server = server
@@ -209,7 +209,7 @@ test "the User-Agent is set, and can be changed" {
     defer s.Stop()
     mut c: Client = Client.Open().Unwrap()
     defer c.Close()
-    Test.Equal(c.Get("${s.Base}/echo").Unwrap().Header("x-agent").UnwrapOr("?"), "zevic-curl/0.1")
+    Test.Equal(c.Get("${s.Base}/echo").Unwrap().Header("x-agent").UnwrapOr("?"), "zevic-curl/0.5")
     c.UserAgent = "mine/2"
     Test.Equal(c.Get("${s.Base}/echo").Unwrap().Header("x-agent").UnwrapOr("?"), "mine/2")
 }

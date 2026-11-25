@@ -57,11 +57,11 @@ fn HasHttps() -> Bool {
 
 /// An answer with the body as bytes (use it for files and anything that is not text).
 class Reply {
-    Status: I64
+    let Status: I64
     /// The address that answered, after redirects.
-    Url: String
-    Headers: Array<Http.Field>
-    Body: Array<U8>
+    let Url: String
+    let Headers: Array<Http.Field>
+    let Body: Array<U8>
 
     fn Init(status: I64, url: String, headers: Array<Http.Field>, body: Array<U8>) {
         this.Status = status
@@ -170,20 +170,20 @@ fn checkRequest(req: Http.Request) -> Result<Unit, Error> {
 ///     let r: Http.Response = c.Get("https://example.com/")?
 class Client {
     /// The most time that a whole request may take, in milliseconds (0 = no limit).
-    TimeoutMs: I64 = 0
+    mut TimeoutMs: I64 = 0
     /// The most time that making the connection may take, in milliseconds.
-    ConnectTimeoutMs: I64 = 30000
-    FollowRedirects: Bool = true
-    MaxRedirects: I64 = 10
-    UserAgent: String = "zevic-curl/0.1"
+    mut ConnectTimeoutMs: I64 = 30000
+    mut FollowRedirects: Bool = true
+    mut MaxRedirects: I64 = 10
+    mut UserAgent: String = "zevic-curl/0.5"
     /// Does not check the certificate and the host name of an HTTPS server. Only for tests and servers you trust.
-    Insecure: Bool = false
+    mut Insecure: Bool = false
     /// A file of certificates to trust, instead of the ones of the system ("" = the default).
-    CaFile: String = ""
+    mut CaFile: String = ""
     /// The most bytes of a body to accept; a larger one is an error (0 = no limit).
-    MaxBodyBytes: I64 = 0
-    h: *CVoid
-    closed: Bool = false
+    mut MaxBodyBytes: I64 = 0
+    let h: *CVoid
+    mut closed: Bool = false
 
     fn Init(h: *CVoid) {
         this.h = h

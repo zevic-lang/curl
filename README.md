@@ -11,14 +11,14 @@ The public API uses only Zevic types and returns `Result` for anything that can 
 Needs libcurl and its development files: `apt install libcurl4-openssl-dev` on Debian and Ubuntu; macOS has them. The tests run on Linux, macOS and Windows in CI. On Windows libcurl comes from vcpkg (`vcpkg install curl:x64-windows`); its import library is called `libcurl.lib`, so copy it to `curl.lib` and add its directory to `LIB`, and add the `include` directory to `CPATH`. The two tests that need a self-signed HTTPS server run on Linux only.
 
 ```
-zevpm get zevic-lang/curl@v0.1.0
+zevpm get zevic-lang/curl@v0.5.0
 ```
 
 or in `zevic.toml`:
 
 ```
 [deps]
-Curl = { git = "https://github.com/zevic-lang/curl", tag = "v0.1.0" }
+Curl = { git = "https://github.com/zevic-lang/curl", tag = "v0.5.0" }
 ```
 
 ## Use
@@ -80,7 +80,7 @@ Options of a `Client` (set them before a request):
 | `TimeoutMs` | 0 | the most time of a whole request (0 = no limit) |
 | `ConnectTimeoutMs` | 30000 | the most time to make the connection |
 | `FollowRedirects` `MaxRedirects` | true, 10 | |
-| `UserAgent` | `zevic-curl/0.1` | |
+| `UserAgent` | `zevic-curl/0.5` | |
 | `CaFile` | "" | a file of certificates to trust instead of the system's |
 | `Insecure` | false | does not check the certificate and the host name. Only for tests and servers you trust |
 | `MaxBodyBytes` | 0 | refuses a larger body (0 = no limit) |

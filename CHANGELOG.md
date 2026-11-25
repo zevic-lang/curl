@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.5.0
+
+The version now follows the version of Zevic that it is made for.
+
+- Needs Zevic 0.5 or later: the fields are written with `let` and `mut`.
+- `Reply` has `let` fields: `Status`, `Url`, `Headers` and `Body` are set only when the reply is made. Change: you cannot assign them any more.
+- The default `UserAgent` is `zevic-curl/0.5`.
+
 ## 0.1.0
 
 First version: an HTTP and HTTPS client on top of libcurl, in the types of `Zevic.Http`.
