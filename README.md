@@ -11,14 +11,14 @@ The public API uses only Zevic types and returns `Result` for anything that can 
 Needs libcurl and its development files: `apt install libcurl4-openssl-dev` on Debian and Ubuntu; macOS has them. The tests run on Linux, macOS and Windows in CI. On Windows libcurl comes from vcpkg (`vcpkg install curl:x64-windows`); its import library is called `libcurl.lib`, so copy it to `curl.lib` and add its directory to `LIB`, and add the `include` directory to `CPATH`. The two tests that need a self-signed HTTPS server run on Linux only.
 
 ```
-zevpm get zevic-lang/curl@v0.1.0
+zevpm get zevic-lang/curl@v0.5.0
 ```
 
 or in `zevic.toml`:
 
 ```
 [deps]
-Curl = { git = "https://github.com/zevic-lang/curl", tag = "v0.1.0" }
+Curl = { git = "https://github.com/zevic-lang/curl", tag = "v0.5.0" }
 ```
 
 ## Use
