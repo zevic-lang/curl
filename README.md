@@ -80,7 +80,7 @@ Options of a `Client` (set them before a request):
 | `TimeoutMs` | 0 | the most time of a whole request (0 = no limit) |
 | `ConnectTimeoutMs` | 30000 | the most time to make the connection |
 | `FollowRedirects` `MaxRedirects` | true, 10 | |
-| `UserAgent` | `zevic-curl/0.1` | |
+| `UserAgent` | `zevic-curl/0.5` | |
 | `CaFile` | "" | a file of certificates to trust instead of the system's |
 | `Insecure` | false | does not check the certificate and the host name. Only for tests and servers you trust |
 | `MaxBodyBytes` | 0 | refuses a larger body (0 = no limit) |

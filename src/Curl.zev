@@ -175,7 +175,7 @@ class Client {
     mut ConnectTimeoutMs: I64 = 30000
     mut FollowRedirects: Bool = true
     mut MaxRedirects: I64 = 10
-    mut UserAgent: String = "zevic-curl/0.1"
+    mut UserAgent: String = "zevic-curl/0.5"
     /// Does not check the certificate and the host name of an HTTPS server. Only for tests and servers you trust.
     mut Insecure: Bool = false
     /// A file of certificates to trust, instead of the ones of the system ("" = the default).
