@@ -2,18 +2,18 @@ module Curl
 
 // An HTTP and HTTPS client for Zevic, on top of libcurl.
 //
-//     let r: Http.Response = Curl.Get("https://example.com/")?
+//     let r: Curl.Response = Curl.Get("https://example.com/")?
 //     Console.Println("${r.Status} ${r.Body.Len()} bytes")
 //
-// It speaks in the types of Zevic.Http (Request, Response, Field), so `Http.Get` can be replaced by `Curl.Get`.
-// What Zevic.Http cannot do and this can: HTTPS, redirects, compressed answers (gzip, deflate, br), proxies
-// (HTTPS_PROXY and friends), timeouts, and one connection for many requests (with a Client).
+// It has the types of a request and an answer (`Request`, `Response`, `Field`): this package is the HTTP client of Zevic
+// (the standard library has no HTTP since 0.6.0; a server is the package `Httpd`).
+// HTTPS, redirects, compressed answers (gzip, deflate, br), proxies (HTTPS_PROXY and friends), timeouts,
+// and one connection for many requests (with a Client) work as in the `curl` command.
 //
-// As in Zevic.Http, a 404 or a 500 is a Response, not an error. An error is a request that did not get an answer.
+// A 404 or a 500 is a Response, not an error. An error is a request that did not get an answer.
 // Only http:// and https:// addresses are accepted.
 
 import Zevic.Bytes
-import Zevic.Http
 import Zevic.Text
 
 extern "C" {
@@ -53,6 +53,92 @@ fn HasHttps() -> Bool {
     zv_curl_has_https().ToI32() != 0
 }
 
+// ---- a request and an answer ----
+
+/// One header line.
+class Field {
+    mut Name: String
+    mut Value: String
+
+    fn Init(name: String, value: String) {
+        this.Name = name
+        this.Value = value
+    }
+}
+
+fn findHeader(fields: Array<Field>, name: String) -> Option<String> {
+    let want: String = Text.ToLower(name)
+    for (f in fields) {
+        if (Text.ToLower(f.Name) == want) {
+            return Some(f.Value)
+        }
+    }
+    None
+}
+
+// Replaces the header of that name, or adds it.
+fn putHeader(fields: Array<Field>, name: String, value: String) -> Array<Field> {
+    let want: String = Text.ToLower(name)
+    mut out: Array<Field> = []
+    mut done: Bool = false
+    for (f in fields) {
+        if (Text.ToLower(f.Name) == want) {
+            if (!done) {
+                out.Push(Field.New(name, value))
+                done = true
+            }
+        } else {
+            out.Push(f)
+        }
+    }
+    if (!done) {
+        out.Push(Field.New(name, value))
+    }
+    out
+}
+
+/// A request to send.
+class Request {
+    mut Method: String
+    mut Url: String
+    mut Body: String
+    mut Headers: Array<Field>
+
+    fn Init(method: String, url: String) {
+        this.Method = method
+        this.Url = url
+        this.Body = ""
+        this.Headers = []
+    }
+
+    mut fn SetHeader(name: String, value: String) { this.Headers = putHeader(this.Headers, name, value) }
+    mut fn SetBody(body: String) { this.Body = body }
+
+    /// The value of a header (the name is not case sensitive).
+    fn Header(name: String) -> Option<String> { findHeader(this.Headers, name) }
+}
+
+/// An answer with the body as text (`Reply` has the body as bytes).
+class Response {
+    mut Status: I64
+    mut Body: String
+    mut Headers: Array<Field>
+
+    fn Init(status: I64, body: String) {
+        this.Status = status
+        this.Body = body
+        this.Headers = []
+    }
+
+    mut fn SetHeader(name: String, value: String) { this.Headers = putHeader(this.Headers, name, value) }
+
+    /// The value of a header (the name is not case sensitive).
+    fn Header(name: String) -> Option<String> { findHeader(this.Headers, name) }
+
+    /// Status 200 to 299.
+    fn IsOk() -> Bool { this.Status >= 200 && this.Status < 300 }
+}
+
 // ---- the answer ----
 
 /// An answer with the body as bytes (use it for files and anything that is not text).
@@ -60,10 +146,10 @@ class Reply {
     let Status: I64
     /// The address that answered, after redirects.
     let Url: String
-    let Headers: Array<Http.Field>
+    let Headers: Array<Field>
     let Body: Array<U8>
 
-    fn Init(status: I64, url: String, headers: Array<Http.Field>, body: Array<U8>) {
+    fn Init(status: I64, url: String, headers: Array<Field>, body: Array<U8>) {
         this.Status = status
         this.Url = url
         this.Headers = headers
@@ -92,8 +178,8 @@ class Reply {
 
 /// Turns the raw header lines that libcurl collected into fields. An answer that was followed by another
 /// (a redirect, a 100 Continue) is dropped: only the fields of the last one count.
-fn parseHeaders(raw: String) -> Array<Http.Field> {
-    mut out: Array<Http.Field> = []
+fn parseHeaders(raw: String) -> Array<Field> {
+    mut out: Array<Field> = []
     for (piece in Text.Split(raw, "\n")) {
         let line: String = Text.TrimEnd(piece)
         if (Text.StartsWith(line, "HTTP/")) {
@@ -104,7 +190,7 @@ fn parseHeaders(raw: String) -> Array<Http.Field> {
             match (Text.IndexOf(line, ":")) {
                 Some(i) => {
                     if (i > 0) {
-                        out.Push(Http.Field.New(Text.Trim(line.Slice(0, i)), Text.Trim(line.Slice(i + 1, line.Len()))))
+                        out.Push(Field.New(Text.Trim(line.Slice(0, i)), Text.Trim(line.Slice(i + 1, line.Len()))))
                     }
                 },
                 None => {},
@@ -141,7 +227,7 @@ fn hasAny(s: String, parts: Array<String>) -> Bool {
 
 // libcurl sends a header line and a method as they are written, so a line break in them would make
 // a second header (or a second request). Refuse them here.
-fn checkRequest(req: Http.Request) -> Result<Unit, Error> {
+fn checkRequest(req: Request) -> Result<Unit, Error> {
     if (req.Method == "" || hasAny(req.Method, [" ", "\t", "\r", "\n", ":", "/"])) {
         return Err(bad("the method is wrong: ${req.Method}"))
     }
@@ -167,7 +253,7 @@ fn checkRequest(req: Http.Request) -> Result<Unit, Error> {
 ///     mut c: Curl.Client = Curl.Client.Open()?
 ///     defer c.Close()
 ///     c.TimeoutMs = 5000
-///     let r: Http.Response = c.Get("https://example.com/")?
+///     let r: Response = c.Get("https://example.com/")?
 class Client {
     /// The most time that a whole request may take, in milliseconds (0 = no limit).
     mut TimeoutMs: I64 = 0
@@ -206,7 +292,7 @@ class Client {
     }
 
     /// Sends a request and gives the answer with the body as bytes.
-    fn Fetch(req: Http.Request) -> Result<Reply, Error> {
+    fn Fetch(req: Request) -> Result<Reply, Error> {
         Assert(!this.closed, "curl: the client is closed")
         checkRequest(req)?
         let h: *CVoid = this.h
@@ -216,7 +302,7 @@ class Client {
         if (req.Method != "GET" && req.Method != "HEAD") {
             zv_curl_set_body(h, req.Body.ToC(), req.Body.Len().ToCLongLong())
             if (req.Body.Len() > 0 && req.Header("Content-Type").IsNone()) {
-                // like Zevic.Http: no Content-Type unless there is one. (An empty value removes the one libcurl adds.)
+                // no Content-Type unless there is one. (An empty value removes the one libcurl adds.)
                 zv_curl_add_header(h, "Content-Type:".ToC())
             }
         }
@@ -249,26 +335,26 @@ class Client {
     }
 
     /// Sends a request. The body of the answer is text (bytes that are not UTF-8 become U+FFFD).
-    fn Send(req: Http.Request) -> Result<Http.Response, Error> {
+    fn Send(req: Request) -> Result<Response, Error> {
         let r: Reply = this.Fetch(req)?
-        mut res: Http.Response = Http.Response.New(r.Status, r.AsText())
+        mut res: Response = Response.New(r.Status, r.AsText())
         res.Headers = r.Headers
         Ok(res)
     }
 
-    fn Get(url: String) -> Result<Http.Response, Error> {
-        this.Send(Http.Request.New("GET", url))
+    fn Get(url: String) -> Result<Response, Error> {
+        this.Send(Request.New("GET", url))
     }
 
-    fn Post(url: String, body: String) -> Result<Http.Response, Error> {
-        mut req: Http.Request = Http.Request.New("POST", url)
+    fn Post(url: String, body: String) -> Result<Response, Error> {
+        mut req: Request = Request.New("POST", url)
         req.SetBody(body)
         this.Send(req)
     }
 
     /// Gets an address and gives the body as bytes.
     fn GetBytes(url: String) -> Result<Array<U8>, Error> {
-        let r: Reply = this.Fetch(Http.Request.New("GET", url))?
+        let r: Reply = this.Fetch(Request.New("GET", url))?
         Ok(r.Body)
     }
 }
@@ -294,18 +380,18 @@ fn takeHeaders(h: *CVoid) -> Array<U8> {
 // ---- one request without a client ----
 
 /// Sends a request with a new client (the connection is not kept).
-fn Send(req: Http.Request) -> Result<Http.Response, Error> {
+fn Send(req: Request) -> Result<Response, Error> {
     mut c: Client = Client.Open()?
     defer c.Close()
     c.Send(req)
 }
 
-fn Get(url: String) -> Result<Http.Response, Error> {
-    Send(Http.Request.New("GET", url))
+fn Get(url: String) -> Result<Response, Error> {
+    Send(Request.New("GET", url))
 }
 
-fn Post(url: String, body: String) -> Result<Http.Response, Error> {
-    mut req: Http.Request = Http.Request.New("POST", url)
+fn Post(url: String, body: String) -> Result<Response, Error> {
+    mut req: Request = Request.New("POST", url)
     req.SetBody(body)
     Send(req)
 }
