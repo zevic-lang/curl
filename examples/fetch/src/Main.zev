@@ -2,7 +2,6 @@ module Main
 
 import Zevic.Console
 import Zevic.Env
-import Zevic.Http
 import Zevic.Text
 import Curl
 
@@ -22,7 +21,7 @@ fn Run(url: String) -> Result<Unit, Error> {
         None => {},
     }
 
-    let r: Curl.Reply = c.Fetch(Http.Request.New("GET", url))?
+    let r: Curl.Reply = c.Fetch(Curl.Request.New("GET", url))?
     Console.Println("${r.Status} ${r.Url}")
     for (f in r.Headers) {
         Console.Println("${f.Name}: ${f.Value}")

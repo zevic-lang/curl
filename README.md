@@ -2,7 +2,7 @@
 
 An HTTP and HTTPS client for [Zevic](https://github.com/zevic-lang/zevic), on top of [libcurl](https://curl.se/libcurl/).
 
-`Zevic.Http` cannot do HTTPS. This package can, and it adds redirects, compressed answers (gzip, deflate, br), proxies, timeouts, and one connection for many requests. It speaks in the types of `Zevic.Http` (`Request`, `Response`, `Field`), so `Http.Get` can be replaced by `Curl.Get`.
+This is the HTTP client of Zevic (the standard library has no HTTP since 0.6.0). It does HTTPS, redirects, compressed answers (gzip, deflate, br), proxies, timeouts, and one connection for many requests. It has the types of a request and an answer (`Request`, `Response`, `Field`). For a server, see the package `Httpd`.
 
 The public API uses only Zevic types and returns `Result` for anything that can fail. A small C layer (`native/zv_curl.c`) holds everything that is awkward to do from Zevic: the options of libcurl (each has its own type), and the collecting of the answer.
 
@@ -27,11 +27,10 @@ Curl = { git = "https://github.com/zevic-lang/curl", tag = "v0.5.0" }
 module Main
 
 import Zevic.Console
-import Zevic.Http
 import Curl
 
 fn Run() -> Result<Unit, Error> {
-    let r: Http.Response = Curl.Get("https://registry.npmjs.org/left-pad")?
+    let r: Curl.Response = Curl.Get("https://registry.npmjs.org/left-pad")?
     Console.Println("${r.Status} ${r.Body.Len()} bytes, ${r.Header("content-type").UnwrapOr("?")}")
     Ok(())
 }
@@ -44,7 +43,7 @@ fn Main() {
 }
 ```
 
-As in `Zevic.Http`, a 404 or a 500 is a `Response`, not an error. An error is a request that did not get an answer.
+A 404 or a 500 is a `Response`, not an error. An error is a request that did not get an answer.
 
 A `Client` keeps its connections, so many requests to one server are fast, and it has the options:
 
@@ -54,10 +53,10 @@ defer c.Close()
 c.TimeoutMs = 5000
 c.UserAgent = "my-app/1.0"
 
-mut req: Http.Request = Http.Request.New("PUT", "https://example.com/items/1")
+mut req: Curl.Request = Curl.Request.New("PUT", "https://example.com/items/1")
 req.SetHeader("Content-Type", "application/json")
 req.SetBody("{\"name\": \"x\"}")
-let r: Http.Response = c.Send(req)?
+let r: Curl.Response = c.Send(req)?
 ```
 
 A complete program is in `examples/fetch`: `cd examples/fetch && zevpm run -- https://example.com/`.
@@ -66,7 +65,7 @@ A complete program is in `examples/fetch`: `cd examples/fetch && zevpm run -- ht
 
 | | |
 | --- | --- |
-| `Curl.Get(url)` `Curl.Post(url, body)` `Curl.Send(request)` | one request with a new client; gives `Result<Http.Response, Error>` |
+| `Curl.Get(url)` `Curl.Post(url, body)` `Curl.Send(request)` | one request with a new client; gives `Result<Curl.Response, Error>` |
 | `Curl.GetBytes(url)` | the body as `Array<U8>` |
 | `Curl.Version()` `Curl.HasHttps()` | the libcurl that is linked |
 | `Curl.Client.Open()` `c.Close()` | a client (closing twice is harmless) |
@@ -91,7 +90,7 @@ The kinds of errors: `Timeout`, `Invalid` (a wrong address, method or header; a 
 
 - Certificates and host names of HTTPS servers are checked. Only `http://` and `https://` addresses are accepted, also in redirects, so a `file://` address cannot be fetched.
 - A line break in the name or the value of a header, or in the method, is refused: libcurl would send it as it is, and it would become another header or another request.
-- Like `Zevic.Http`, a request body gets no `Content-Type` unless you set one (libcurl alone would send `application/x-www-form-urlencoded`).
+- A request body gets no `Content-Type` unless you set one (libcurl alone would send `application/x-www-form-urlencoded`).
 - A `GET` or `HEAD` request cannot have a body.
 - The proxy of the environment is used (`HTTPS_PROXY`, `HTTP_PROXY`, `NO_PROXY`), as in the `curl` command.
 
@@ -103,7 +102,7 @@ A `Client` is for one thread at a time. A body can hold any bytes (use `GetBytes
 zevpm test
 ```
 
-Most tests start a small server of `Zevic.Http` on this machine. Two tests need an HTTPS server with a certificate that no store trusts; they run when these are set, and say that they are skipped when not:
+Most tests start a small server (written with `Zevic.Net`) on this machine. Two tests need an HTTPS server with a certificate that no store trusts; they run when these are set, and say that they are skipped when not:
 
 ```
 CURL_TEST_HTTPS_URL=https://localhost:8443/
