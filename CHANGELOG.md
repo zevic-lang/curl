@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.6.0
 
 - **Breaking:** the package has its own types `Curl.Request`, `Curl.Response` and `Curl.Field` and no longer uses `Zevic.Http` (the standard library drops its `Http` module in 0.6.0). Change `Http.Request` to `Curl.Request` and so on, and remove `import Zevic.Http`. `Request.Path()`, `Request.Query()` and `Response.Text(...)` are gone: they were for servers.
 - The tests start a small server written with `Zevic.Net` instead of `Zevic.Http`.
